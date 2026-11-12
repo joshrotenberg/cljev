@@ -1,0 +1,18 @@
+{:paths ["src"]
+ :tasks
+ {test {:doc "Run the tests under babashka"
+        :extra-paths ["test"]
+        :extra-deps {io.github.cognitect-labs/test-runner
+                     {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+        :task (exec 'cognitect.test-runner.api/test)
+        :exec-args {:dirs ["test"]}}
+  test:jvm {:doc "Run the tests on the JVM"
+            :task (clojure "-M:test")}
+  lint {:doc "Lint with clj-kondo"
+        :task (shell "clj-kondo --lint src test")}
+  fmt {:doc "Format the sources with cljfmt"
+       :task (clojure "-M:cljfmt fix src test")}
+  fmt:check {:doc "Check formatting with cljfmt"
+             :task (clojure "-M:cljfmt check src test")}
+  ci {:doc "Format check, lint, and both test runs"
+      :depends [fmt:check lint test test:jvm]}}}

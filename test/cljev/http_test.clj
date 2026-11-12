@@ -1,0 +1,82 @@
+(ns cljev.http-test
+  "Round trips through the real HTTP client against a local server."
+  (:require [cheshire.core :as json]
+            [cljev.core :as jev]
+            [clojure.test :refer [deftest is]]
+            [org.httpkit.server :as server]))
+
+(defn- with-server
+  "Run `(f base-url)` against a local server that answers with `handler`."
+  [handler f]
+  (let [stop (server/run-server handler {:port 0 :ip "127.0.0.1"})
+        port (:local-port (meta stop))]
+    (try
+      (f (str "http://127.0.0.1:" port))
+      (finally (stop)))))
+
+(defn- json-reply [status body]
+  {:status status
+   :headers {"content-type" "application/json"}
+   :body (json/generate-string body)})
+
+(deftest system-one-round-trip
+  (let [seen (atom nil)]
+    (with-server
+      (fn [req]
+        (reset! seen (assoc req :body (some-> (:body req) slurp json/parse-string)))
+        (json-reply 200 {"model" "jev-1.14.0"
+                         "answers" {"tone" {"type" "choice" "choice" "calm" "confidence" 0.7
+                                            "probabilities" {"angry" 0.2 "calm" 0.8}}}
+                         "usage" {"input_tokens" 9 "output_tokens" 1}}))
+      (fn [base-url]
+        (let [client (jev/client {:api-key "k-123" :base-url base-url})
+              result (jev/ask client "All good, thanks."
+                              {:tone (jev/choice "Tone?" [:angry :calm])}
+                              {:long-context? true})]
+          (is (= {:model "jev-1.14.0"
+                  :answers {:tone {:type :choice :choice :calm :confidence 0.7
+                                   :probabilities {:angry 0.2 :calm 0.8}}}
+                  :usage {:input-tokens 9 :output-tokens 1}}
+                 result))
+          (is (= :post (:request-method @seen)))
+          (is (= "/v1/systemone" (:uri @seen)))
+          (is (= "Bearer k-123" (get-in @seen [:headers "authorization"])))
+          (is (= "true" (get-in @seen [:headers "typesafe-danger-zone-long-context"])))
+          (is (= {"model" "jev-latest"
+                  "state" "All good, thanks."
+                  "questions" {"tone" {"type" "choice" "instructions" "Tone?"
+                                       "criteria" {"angry" nil "calm" nil}}}}
+                 (:body @seen))))))))
+
+(deftest retries-then-succeeds
+  (let [calls (atom 0)]
+    (with-server
+      (fn [_]
+        (if (= 1 (swap! calls inc))
+          (assoc-in (json-reply 429 {"detail" "slow down"})
+                    [:headers "retry-after-ms"] "1")
+          (json-reply 200 {"models" [{"name" "jev-latest" "description" "Latest"
+                                      "release_date" "2026-10-14"}]})))
+      (fn [base-url]
+        (is (= [{:name "jev-latest" :description "Latest" :release-date "2026-10-14"}]
+               (jev/models (jev/client {:api-key "k" :base-url base-url}))))
+        (is (= 2 @calls))))))
+
+(deftest unauthorized
+  (with-server
+    (fn [_] (json-reply 401 {"detail" "Invalid API key"}))
+    (fn [base-url]
+      (let [e (try (jev/models (jev/client {:api-key "bad" :base-url base-url}))
+                   (catch clojure.lang.ExceptionInfo e e))]
+        (is (= ::jev/api-error (:type (ex-data e))))
+        (is (= 401 (:status (ex-data e))))
+        (is (= "Invalid API key" (:detail (ex-data e))))))))
+
+(deftest unreachable-server
+  (let [port (with-open [s (java.net.ServerSocket. 0)] (.getLocalPort s))
+        client (jev/client {:api-key "k"
+                            :base-url (str "http://127.0.0.1:" port)
+                            :retry {:max-retries 1 :backoff-initial-ms 1}})
+        e (try (jev/models client) (catch clojure.lang.ExceptionInfo e e))]
+    (is (= ::jev/connection-error (:type (ex-data e))))
+    (is (= 2 (:attempts (ex-data e))))))
