@@ -587,3 +587,69 @@
       (is (= 1 (jev/sample {:type :score :probabilities {0 0.1 1 0.8 2 0.1}} 0.5))))
     (testing "an answer without probabilities is rejected"
       (is (thrown? clojure.lang.ExceptionInfo (jev/sample {:type :noul :noul 0.5}))))))
+
+(deftest names-that-collide-as-strings
+  (testing "question names"
+    (let [[client requests] (stub [])
+          e (try (jev/ask client "s" {:a (jev/noul "one") "a" (jev/noul "two")})
+                 (catch clojure.lang.ExceptionInfo e e))]
+      (is (= ::jev/invalid-request (:type (ex-data e))))
+      (is (empty? @requests))))
+  (testing "choice option names, from the constructor"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"distinct"
+                          (jev/choice "?" [:a "a"])))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"distinct"
+                          (jev/choice "?" {:a "x" "a" "y"}))))
+  (testing "criteria names in a hand-written question"
+    (let [[client requests] (stub [])
+          e (try (jev/ask client "s" {:q {:type :choice :criteria {:a nil "a" nil}}})
+                 (catch clojure.lang.ExceptionInfo e e))]
+      (is (= ::jev/invalid-question (:type (ex-data e))))
+      (is (= :q (:question (ex-data e))))
+      (is (empty? @requests))))
+  (testing "names that differ only by namespace or case are distinct"
+    (let [[client] (stub [(reply 200 {"answers" {"a/x" {"type" "noul" "noul" 0.1}
+                                                 "b/x" {"type" "noul" "noul" 0.2}
+                                                 "X" {"type" "noul" "noul" 0.3}}})])]
+      (is (= {:a/x 0.1 :b/x 0.2 "X" 0.3}
+             (update-vals (:answers (jev/ask client "s" {:a/x (jev/noul "?")
+                                                         :b/x (jev/noul "?")
+                                                         "X" (jev/noul "?")}))
+                          :noul))))))
+
+(deftest header-names-ignore-case
+  (testing "a caller's header never travels beside the client's"
+    (let [[client requests] (stub [(ok-answer "q")]
+                                  {:headers {"Authorization" "Bearer other"
+                                             "Content-Type" "text/plain"
+                                             "User-Agent" "mine/1.0"
+                                             "X-Team" "support"}})]
+      (jev/ask client "s" {:q (jev/noul "?")} {:headers {"ACCEPT" "application/x-custom"
+                                                         "x-team" "billing"}})
+      (is (= {"authorization" "Bearer test-key"
+              "content-type" "application/json"
+              "user-agent" "mine/1.0"
+              "accept" "application/x-custom"
+              "x-team" "billing"}
+             (:headers (first @requests))))))
+  (testing "without a key, the caller's authorization header is sent"
+    (let [[client requests] (stub [(ok-answer "q")]
+                                  {:api-key nil :base-url "http://localhost:8080"
+                                   :headers {"Authorization" "Basic abc"}})]
+      (jev/ask client "s" {:q (jev/noul "?")})
+      (is (= "Basic abc" (get-in (first @requests) [:headers "authorization"])))))
+  (testing "a caller's content type does not reach a multipart request"
+    (let [[client requests] (stub [(ok-answer "q")] {:headers {"Content-Type" "text/plain"}})]
+      (jev/ask client {:photo (jev/image (.getBytes "x") :png)} {:q (jev/noul "?")}
+               {:images? true})
+      (is (not (contains? (:headers (first @requests)) "content-type")))
+      (is (not (contains? (:headers (first @requests)) "Content-Type"))))))
+
+(deftest api-errors-carry-the-retry-delay
+  (let [[client] (stub [(reply 429 {"detail" "slow down"} {"retry-after" "3"})]
+                       {:retry {:max-retries 0}})
+        e (try (jev/models client) (catch clojure.lang.ExceptionInfo e e))]
+    (is (= 3000 (:retry-after-ms (ex-data e)))))
+  (let [[client] (stub [(reply 400 {"detail" "bad"})])
+        e (try (jev/models client) (catch clojure.lang.ExceptionInfo e e))]
+    (is (nil? (:retry-after-ms (ex-data e))))))
