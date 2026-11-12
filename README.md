@@ -21,9 +21,8 @@ not affiliated with TypeSafe.
 
 ## Using cljev
 
-Each release is on Clojars and is also a git tag (see
-[RELEASING.md](RELEASING.md)). The first release, 0.1.0, has not been made
-yet; until it is, depend on a commit with `:git/sha`.
+cljev is on [Clojars](https://clojars.org/io.github.joshrotenberg/cljev),
+and each release is also a git tag (see [RELEASING.md](RELEASING.md)):
 
 <!-- x-release-please-start-version -->
 ```clojure
