@@ -66,6 +66,10 @@ These are not checked by `bb lint`; reviews hold changes to them.
   are keyed by the caller's own question and option names.
 - The wire format follows the [TypeSafe OpenAPI spec](https://api.typesafe.ai/openapi.json).
   Unknown response fields and answer types pass through instead of failing.
+- TypeSafe's hosted API is the default and the reference. Other System One
+  servers are supported by reading looser responses, not by per-server code
+  paths. The environment's `TYPESAFE_API_KEY` is never sent to a `:base-url`
+  the caller gave.
 - Choice options keep the order the caller gave. TypeSafe documents that the
   order can affect the answer.
 - Tests must not call the TypeSafe API. Live tests are opt-in.

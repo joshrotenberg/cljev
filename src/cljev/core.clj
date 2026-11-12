@@ -246,12 +246,11 @@
 ;; ---------------------------------------------------------------------------
 ;; Client
 
-(defn- clean-api-key [api-key]
-  (let [api-key (some-> api-key str/trim)]
-    (when (str/blank? api-key)
-      (throw (ex-info "No API key: pass :api-key or set TYPESAFE_API_KEY"
-                      {:type ::missing-api-key})))
-    (when (re-find #"[^\x21-\x7E]" api-key)
+(defn- clean-api-key
+  "The key with surrounding whitespace removed, or nil when there is none."
+  [api-key]
+  (let [api-key (some-> api-key str/trim not-empty)]
+    (when (some->> api-key (re-find #"[^\x21-\x7E]"))
       (throw (ex-info (str "The API key contains whitespace, control, or "
                            "non-ASCII characters")
                       {:type ::invalid-api-key})))
@@ -263,6 +262,8 @@
     :api-key      API key. Default: the TYPESAFE_API_KEY environment variable.
                   Surrounding whitespace is removed.
     :base-url     Default: TYPESAFE_BASE_URL, then https://api.typesafe.ai.
+                  Point it at another server that implements the System One
+                  API; see below.
     :model        Default model for `ask`. Default: TYPESAFE_DEFAULT_MODEL,
                   then \"jev-latest\". An alias such as jev-latest moves when a
                   release ships; pass a versioned id such as \"jev-1.14.0\" to
@@ -270,31 +271,48 @@
     :timeout-ms   Timeout for connecting and for each request. Default 10000.
     :retry        Map merged over `default-retry`. `{:max-retries 0}` turns
                   retries off.
-    :compression  :gzip (the default) compresses request bodies of 1 KiB or
-                  more. nil or false sends every body uncompressed, for a
-                  server that does not accept compressed requests.
+    :compression  :gzip compresses request bodies of 1 KiB or more; nil or
+                  false sends every body uncompressed. Default: :gzip for
+                  the TypeSafe API, nil for another :base-url.
+    :systemone-path  Path of the System One endpoint. Default /v1/systemone.
+    :models-path     Path of the models endpoint. Default /v1/models.
     :headers      Extra headers sent with every request.
     :http-client  A babashka.http-client client to use instead of a new one.
     :request-fn   Replacement for `babashka.http-client/request`. For tests.
     :sleep-fn     Function of milliseconds used to wait between retries.
 
+  Another backend: a `:base-url` other than TypeSafe's needs no API key, and
+  without one no authorization header is sent. TYPESAFE_API_KEY is not used
+  for a `:base-url` given here, so the TypeSafe key is never sent to another
+  server; pass that server's key as `:api-key` if it needs one.
+
   The client is a plain map. The API key is kept in its metadata so that
   printing the client does not print the key."
   ([] (client {}))
   ([{:keys [api-key base-url model timeout-ms retry headers
-            http-client request-fn sleep-fn]
+            http-client request-fn sleep-fn systemone-path models-path]
      :as opts}]
-   (let [api-key (clean-api-key (or api-key (System/getenv "TYPESAFE_API_KEY")))
+   (let [url (str/replace (or base-url
+                              (System/getenv "TYPESAFE_BASE_URL")
+                              default-base-url)
+                          #"/+$" "")
+         typesafe? (= url default-base-url)
+         ;; the environment's key belongs to the environment's server
+         env-key (when (or typesafe? (nil? base-url))
+                   (System/getenv "TYPESAFE_API_KEY"))
+         api-key (clean-api-key (or api-key env-key))
          timeout-ms (or timeout-ms default-timeout-ms)
-         compression (get opts :compression :gzip)]
+         compression (get opts :compression (when typesafe? :gzip))]
+     (when (and typesafe? (nil? api-key))
+       (throw (ex-info "No API key: pass :api-key or set TYPESAFE_API_KEY"
+                       {:type ::missing-api-key})))
      (when-not (contains? #{:gzip nil false} compression)
        (throw (ex-info ":compression must be :gzip, nil, or false"
                        {:type ::invalid-option :compression compression})))
      (with-meta
-       {:base-url (str/replace (or base-url
-                                   (System/getenv "TYPESAFE_BASE_URL")
-                                   default-base-url)
-                               #"/+$" "")
+       {:base-url url
+        :systemone-path (or systemone-path "/v1/systemone")
+        :models-path (or models-path "/v1/models")
         :model (or model
                    (System/getenv "TYPESAFE_DEFAULT_MODEL")
                    default-model)
@@ -332,7 +350,8 @@
             long)))
 
 (defn- request-id [{:keys [headers]}]
-  (get headers "x-typesafe-request-id"))
+  (or (get headers "x-typesafe-request-id")
+      (get headers "x-request-id")))
 
 (defn- parse-body [body]
   (when-not (str/blank? body)
@@ -437,8 +456,8 @@
                                       "user-agent" (str "cljev/" version)}
                                      (:headers client)
                                      headers
-                                     {"authorization"
-                                      (str "Bearer " (::api-key (meta client)))})
+                                     (when-let [api-key (::api-key (meta client))]
+                                       {"authorization" (str "Bearer " api-key)}))
                      :timeout (or timeout-ms (:timeout-ms client))
                      :throw false}
               (:http-client client) (assoc :client (:http-client client)))
@@ -476,9 +495,19 @@
 (defn- level-key [s]
   (or (parse-long s) s))
 
+(defn- answer-type
+  "The type of an answer: its own `type` tag, or, for a server that leaves
+  the tag out, the type of the question it answers, or the field that only
+  one type of answer has."
+  [question answer]
+  (or (some-> (:type answer) keyword)
+      (some-> (or (:type question) (get question "type")) name keyword)
+      (some #(when (contains? answer %) %) [:noul :choice :score :box])))
+
 (defn- parse-answer [question answer]
-  (let [answer (-> (update-keys answer field-key)
-                   (update-some :type keyword))]
+  (let [answer (update-keys answer field-key)
+        type (answer-type question answer)
+        answer (cond-> answer type (assoc :type type))]
     (case (:type answer)
       :choice (let [criteria (or (:criteria question) (get question "criteria"))
                     lookup (if (map? criteria) (key-lookup criteria) {})]
@@ -541,7 +570,9 @@
 
   Throws an ex-info whose `:type` is `:cljev.core/api-error` (with `:status`,
   `:detail`, `:body`, `:request-id`) for a non-2xx reply, or
-  `:cljev.core/connection-error` when the server could not be reached."
+  `:cljev.core/connection-error` when the server could not be reached.
+
+  See `verdict` and `sample` for acting on an answer."
   ([client state questions] (ask client state questions nil))
   ([client state questions
     {:keys [model assets upload images? long-context? extra-body timeout-ms headers]}]
@@ -556,7 +587,7 @@
          sent-questions (replace-images found questions)
          {:keys [assets parts]} (encode-assets (merge (named-assets assets) @found)
                                                upload)
-         response (request client :post "/v1/systemone"
+         response (request client :post (:systemone-path client)
                            {:body (cond-> (merge extra-body
                                                  {:model (or model (:model client))
                                                   :state sent-state
@@ -614,9 +645,68 @@
 (defn models
   "List the models and aliases available to the account, as a vector of
   `{:name .. :description .. :release-date ..}`. The vector's metadata has
-  `:request-id` and `:response`."
+  `:request-id` and `:response`.
+
+  A server that lists models in the OpenAI shape, under `data` with an `id`,
+  is read too: each entry gets its `:name` from its `id`."
   [client]
-  (let [response (request client :get "/v1/models" nil)]
-    (with-meta (mapv #(update-keys % field-key)
-                     (get (:body response) "models"))
+  (let [response (request client :get (:models-path client) nil)
+        body (:body response)]
+    (with-meta (mapv (fn [entry]
+                       (let [entry (update-keys entry field-key)]
+                         (cond-> entry
+                           (and (nil? (:name entry)) (:id entry))
+                           (assoc :name (:id entry)))))
+                     (or (get body "models") (get body "data")))
       (response-meta response))))
+
+;; ---------------------------------------------------------------------------
+;; Decisions
+
+(defn verdict
+  "Read a yes/no answer as `:yes`, `:no`, or `:unsure`.
+
+  `answer` is a noul answer or a probability of yes. `threshold`, from 0.5
+  to 1, is how sure the answer must be either way: `:yes` when the
+  probability of yes is at least `threshold`, `:no` when the probability of
+  no is, and `:unsure` in between. The default, 0.5, is never unsure.
+
+    (jev/verdict {:type :noul :noul 0.93} 0.8) ;; => :yes
+    (jev/verdict {:type :noul :noul 0.60} 0.8) ;; => :unsure
+    (jev/verdict {:type :noul :noul 0.10} 0.8) ;; => :no"
+  ([answer] (verdict answer 0.5))
+  ([answer threshold]
+   (let [p (if (number? answer) answer (:noul answer))]
+     (when-not (number? p)
+       (throw (ex-info "verdict takes a noul answer or a probability"
+                       {:type ::invalid-answer :answer answer})))
+     (when-not (<= 0.5 threshold 1)
+       (throw (ex-info "The verdict threshold is between 0.5 and 1"
+                       {:type ::invalid-option :threshold threshold})))
+     (cond
+       (>= p threshold) :yes
+       (>= (- 1 p) threshold) :no
+       :else :unsure))))
+
+(defn sample
+  "Pick an option of a choice answer, or a level of a score answer, at random
+  in proportion to its probability, where `:choice` always gives the
+  likeliest one. An option with probability zero is never picked.
+
+  `roll` is a number from 0 to 1 and defaults to `(rand)`; pass your own for
+  a draw you can reproduce."
+  ([answer] (sample answer (rand)))
+  ([answer roll]
+   (let [ranked (sort-by (juxt (comp - val) (comp str key)) (:probabilities answer))
+         target (* roll (reduce + 0.0 (map val ranked)))]
+     (when (empty? ranked)
+       (throw (ex-info "sample takes an answer with :probabilities"
+                       {:type ::invalid-answer :answer answer})))
+     (loop [[[option p] & more] ranked
+            seen 0.0]
+       (let [seen (+ seen p)]
+         (cond
+           (< target seen) option
+           (seq more) (recur more seen)
+           ;; a roll at or past the end of the distribution
+           :else (key (first ranked))))))))

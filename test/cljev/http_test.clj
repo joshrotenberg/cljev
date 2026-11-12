@@ -94,7 +94,8 @@
                          "answers" {"q" {"type" "noul" "noul" 0.5}}
                          "usage" {"input_tokens" 9 "output_tokens" 1}}))
       (fn [base-url]
-        (jev/ask (jev/client {:api-key "k" :base-url base-url}) big {:q (jev/noul "?")})
+        (jev/ask (jev/client {:api-key "k" :base-url base-url :compression :gzip})
+                 big {:q (jev/noul "?")})
         (is (= "gzip" (:encoding @seen)))
         (is (= big (get-in @seen [:body "state"])))))))
 
@@ -122,3 +123,21 @@
           (is (str/includes? body "\"part\":\"image-0\""))
           (is (str/includes? body "Content-Type: image/png"))
           (is (str/includes? body "not-really-a-png")))))))
+
+(deftest keyless-backend-round-trip
+  (let [seen (atom nil)]
+    (with-server
+      (fn [req]
+        (reset! seen req)
+        ;; no type tags, no usage, an extra field: a looser dialect
+        (assoc-in (json-reply 200 {"answers" {"q" {"noul" 0.9}}
+                                   "routing" {"node" "a"}})
+                  [:headers "x-request-id"] "abc-123"))
+      (fn [base-url]
+        (let [result (jev/ask (jev/client {:base-url base-url :model "local-model"})
+                              (apply str (repeat 400 "lorem ipsum "))
+                              {:q (jev/noul "?")})]
+          (is (= {:answers {:q {:type :noul :noul 0.9}} :routing {"node" "a"}} result))
+          (is (= "abc-123" (:request-id (meta result))))
+          (is (not (contains? (:headers @seen) "authorization")))
+          (is (not (contains? (:headers @seen) "content-encoding"))))))))

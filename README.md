@@ -119,6 +119,31 @@ affect the answer and that Jev can lean toward the first option. A collection
 keeps its order for any number of options. A Clojure map literal only keeps
 its order up to 8 entries, so use pairs for a larger set with descriptions.
 
+### Acting on an answer
+
+`verdict` reads a yes/no answer as `:yes`, `:no`, or `:unsure`. The threshold,
+from 0.5 to 1, is how sure the answer must be either way; the default of 0.5
+is never unsure.
+
+```clojure
+(case (jev/verdict (jev/ask-one client message (jev/noul "Is this spam?")) 0.8)
+  :yes    (discard message)
+  :no     (deliver message)
+  :unsure (hold-for-review message))
+```
+
+`sample` picks a choice option, or a score level, at random in proportion to
+its probability, where `:choice` always gives the likeliest one. An option
+with probability zero is never picked. Pass a roll from 0 to 1 as a second
+argument for a draw you can reproduce.
+
+```clojure
+(jev/sample {:type :choice :choice :talk :probabilities {:talk 0.7 :flee 0.3}})
+;; => :talk about 70% of the time, :flee about 30%
+```
+
+Both are pure functions and make no request.
+
 ### Many states
 
 `ask-many` asks the same questions about each of a collection of states, one
@@ -216,6 +241,8 @@ returned with their fields as they came.
              :model "jev-1.14.0"   ; default: TYPESAFE_DEFAULT_MODEL, then jev-latest
              :timeout-ms 10000
              :compression :gzip
+             :systemone-path "/v1/systemone"
+             :models-path "/v1/models"
              :retry {:max-retries 2
                      :backoff-initial-ms 500
                      :backoff-max-ms 5000
@@ -224,16 +251,53 @@ returned with their fields as they came.
              :headers {"x-team" "support"}})
 ```
 
-The values shown for `:timeout-ms`, `:compression`, and `:retry` are the
-defaults.
+The values shown for `:timeout-ms`, `:compression`, the two paths, and
+`:retry` are the defaults for the TypeSafe API.
 
 - **API key.** Surrounding whitespace is removed, so a key read from a file
   works. A key with whitespace or non-ASCII characters inside it is rejected
   before any request. The key is stored in the client's metadata, so printing
   the client does not print the key.
 - **Compression.** Request bodies of 1 KiB or more are gzip-compressed. Pass
-  `:compression nil` for a server that does not accept compressed requests.
-  Multipart requests are not compressed.
+  `:compression nil` to send them as they are. Multipart requests are not
+  compressed. For another `:base-url` compression is off by default; see
+  [Other System One backends](#other-system-one-backends).
+
+### Other System One backends
+
+The TypeSafe API is the default. Other servers implement the same API, among
+them gateways that resell Jev and self-hosted servers that run open models,
+and `:base-url` points the client at one:
+
+```clojure
+;; a local server: no key, so no authorization header is sent
+(jev/client {:base-url "http://localhost:8080" :model "my-local-model"})
+
+;; a gateway with its own key and model name
+(jev/client {:base-url "https://openrouter.ai/api"
+             :api-key  (System/getenv "OPENROUTER_API_KEY")
+             :model    "typesafe/jev-1.13"})
+```
+
+What changes for a `:base-url` other than TypeSafe's:
+
+- **No key is required**, and `TYPESAFE_API_KEY` is not used, so the TypeSafe
+  key is never sent to another server. Pass that server's key as `:api-key`
+  if it needs one.
+- **Compression is off** unless you pass `:compression :gzip`.
+- **Paths can be changed** with `:systemone-path` (default `/v1/systemone`)
+  and `:models-path` (default `/v1/models`).
+
+For any server, the client reads the looser responses some of them send:
+answers without a `type` tag take the type of their question, missing fields
+such as `usage` are left out of the result, extra fields are kept, a model
+list in the OpenAI shape (`data` with `id`) gets a `:name` from each `id`,
+and the request id falls back to the `x-request-id` header.
+
+Another server answers with another model. The numbers have the same shape
+but not the same meaning, so a threshold tuned against Jev does not carry
+over. Features such as images, box questions, and long context depend on the
+server.
 
 ### Retries and errors
 
@@ -251,8 +315,9 @@ Failures are thrown as `ex-info`:
 | `:cljev.core/invalid-question` | Bad choice options or score levels | |
 | `:cljev.core/invalid-asset` | Unsupported image format, or a bad `:assets` value | |
 | `:cljev.core/invalid-request` | `ask` called with no questions | |
-| `:cljev.core/invalid-option` | Unknown `:upload` or `:compression` value | |
-| `:cljev.core/missing-api-key` | No API key given or in the environment | |
+| `:cljev.core/invalid-option` | Unknown `:upload` or `:compression` value, or a `verdict` threshold outside 0.5 to 1 | |
+| `:cljev.core/invalid-answer` | `verdict` or `sample` given an answer it cannot read | |
+| `:cljev.core/missing-api-key` | No API key for the TypeSafe API, given or in the environment | |
 | `:cljev.core/invalid-api-key` | API key contains whitespace or non-ASCII characters | |
 
 ## Examples

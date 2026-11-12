@@ -491,3 +491,99 @@
         (jev/ask-many client ["x"] questions {:model "jev-1.13.0" :concurrency 1})
         (is (= "jev-1.13.0" (get (sent-body (first @requests)) "model")))
         (is (not (contains? (sent-body (first @requests)) "concurrency")))))))
+
+(deftest other-backends
+  (testing "a base url other than TypeSafe's needs no key and sends no authorization"
+    (let [[client requests] (stub [(ok-answer "q") (reply 200 {"models" []})]
+                                  {:api-key nil :base-url "http://localhost:8080"})]
+      (jev/ask client (apply str (repeat 400 "lorem ipsum ")) {:q (jev/noul "?")})
+      (jev/models client)
+      (doseq [req @requests]
+        (is (not (contains? (:headers req) "authorization"))))
+      (is (= "http://localhost:8080/v1/systemone" (:uri (first @requests))))
+      (is (string? (:body (first @requests))) "compression is off by default")))
+  (testing "its own key is sent when given, and compression can be turned on"
+    (let [[client requests] (stub [(ok-answer "q")]
+                                  {:api-key "other-key" :base-url "https://gateway.test/api"
+                                   :compression :gzip})]
+      (jev/ask client (apply str (repeat 400 "lorem ipsum ")) {:q (jev/noul "?")})
+      (is (= "Bearer other-key" (get-in (first @requests) [:headers "authorization"])))
+      (is (bytes? (:body (first @requests))))))
+  (testing "the TypeSafe API still requires a key"
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No API key"
+                          (jev/client {:api-key "" :request-fn identity})))
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"No API key"
+                          (jev/client {:api-key " " :base-url "https://api.typesafe.ai/"
+                                       :request-fn identity}))))
+  (testing "the endpoint paths can be changed"
+    (let [[client requests] (stub [(ok-answer "q") (reply 200 {"models" []})]
+                                  {:base-url "https://gateway.test"
+                                   :systemone-path "/v1/decisions"
+                                   :models-path "/v2/models"})]
+      (jev/ask client "s" {:q (jev/noul "?")})
+      (jev/models client)
+      (is (= ["https://gateway.test/v1/decisions" "https://gateway.test/v2/models"]
+             (map :uri @requests))))))
+
+(deftest answers-without-a-type-tag
+  (let [[client] (stub [(reply 200 {"answers" {"yes" {"noul" 0.8}
+                                               "tone" {"choice" "calm" "confidence" 0.7
+                                                       "probabilities" {"calm" 0.9 "angry" 0.1}}
+                                               "urgency" {"score" 1.2
+                                                          "probabilities" {"0" 0.4 "1" 0.6}}
+                                               "raw" {"choice" "x"}}})])
+        result (jev/ask client "s" {:yes (jev/noul "?")
+                                    :tone (jev/choice "?" [:calm :angry])
+                                    :urgency (jev/score "?" ["low" "high"])
+                                    :raw {:instructions "no type on the question either"
+                                          :criteria {"x" nil}}})]
+    (is (= {:type :noul :noul 0.8} (get-in result [:answers :yes])))
+    (is (= {:type :choice :choice :calm :confidence 0.7
+            :probabilities {:calm 0.9 :angry 0.1}}
+           (get-in result [:answers :tone])))
+    (is (= {:type :score :score 1.2 :probabilities {0 0.4 1 0.6}}
+           (get-in result [:answers :urgency])))
+    (is (= {:type :choice :choice "x"} (get-in result [:answers :raw])))
+    (is (not (contains? result :usage)))))
+
+(deftest models-in-the-openai-shape
+  (let [[client] (stub [(reply 200 {"object" "list"
+                                    "data" [{"id" "local-model" "object" "model"
+                                             "owned_by" "me"}]})])]
+    (is (= [{:id "local-model" :name "local-model" :object "model" :owned-by "me"}]
+           (jev/models client)))))
+
+(deftest request-id-from-other-servers
+  (let [[client] (stub [(reply 200 {"models" []} {"x-request-id" "abc"})])]
+    (is (= "abc" (:request-id (meta (jev/models client)))))))
+
+(deftest verdicts
+  (testing "the default threshold is never unsure"
+    (is (= :yes (jev/verdict {:type :noul :noul 0.5})))
+    (is (= :yes (jev/verdict 0.51)))
+    (is (= :no (jev/verdict {:type :noul :noul 0.49}))))
+  (testing "a threshold leaves the middle unsure"
+    (is (= [:no :no :unsure :unsure :unsure :yes :yes]
+           (map #(jev/verdict % 0.8) [0.0 0.2 0.21 0.5 0.79 0.8 1.0]))))
+  (testing "bad arguments are rejected"
+    (is (thrown? clojure.lang.ExceptionInfo (jev/verdict {:type :choice :choice :a})))
+    (is (thrown? clojure.lang.ExceptionInfo (jev/verdict 0.9 0.4)))
+    (is (thrown? clojure.lang.ExceptionInfo (jev/verdict 0.9 1.5)))))
+
+(deftest sampling
+  (let [answer {:type :choice :choice :talk
+                :probabilities {:flee 0.25 :talk 0.7 :fight 0.05 :sing 0.0}}]
+    (testing "a roll lands in the option whose share of the distribution it falls in"
+      (is (= [:talk :talk :flee :flee :fight :fight]
+             (map #(jev/sample answer %) [0.0 0.69 0.7 0.94 0.95 0.999]))))
+    (testing "a roll past the end falls back to the likeliest option"
+      (is (= :talk (jev/sample answer 1.0))))
+    (testing "an option with no probability is never picked"
+      (is (not-any? #{:sing} (repeatedly 500 #(jev/sample answer)))))
+    (testing "probabilities that do not sum to one are scaled"
+      (is (= :b (jev/sample {:probabilities {:a 2 :b 6}} 0.5)))
+      (is (= :a (jev/sample {:probabilities {:a 2 :b 6}} 0.8))))
+    (testing "score answers give a level"
+      (is (= 1 (jev/sample {:type :score :probabilities {0 0.1 1 0.8 2 0.1}} 0.5))))
+    (testing "an answer without probabilities is rejected"
+      (is (thrown? clojure.lang.ExceptionInfo (jev/sample {:type :noul :noul 0.5}))))))
