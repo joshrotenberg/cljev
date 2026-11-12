@@ -28,7 +28,7 @@
 
 (def version
   "The version of this library, sent in the user-agent header."
-  "0.1.0") ; x-release-please-version
+  "0.1.1") ; x-release-please-version
 
 (def default-base-url "https://api.typesafe.ai")
 (def default-model "jev-latest")
