@@ -67,6 +67,12 @@
     (string? k) k
     :else (str k)))
 
+(defn- distinct-names?
+  "Whether `names` are still distinct as the JSON keys they are sent as."
+  [names]
+  (or (empty? names)
+      (apply distinct? (map key->str names))))
+
 (defn noul
   "A yes/no question. The answer is the probability that the answer is yes.
 
@@ -110,6 +116,10 @@
                                        {:type ::invalid-question})))
                      ordered))
         n (count criteria)]
+    (when-not (distinct-names? (keys criteria))
+      (throw (ex-info (str "Choice option names must be distinct once written "
+                           "as strings: :a and \"a\" are the same name")
+                      {:type ::invalid-question})))
     (when-not (<= 1 n max-choice-options)
       (throw (ex-info (str "A choice question takes 1 to " max-choice-options
                            " options, got " n)
@@ -384,7 +394,8 @@
               :detail detail
               :body parsed
               :headers headers
-              :request-id id})))
+              :request-id id
+              :retry-after-ms (retry-after-ms response)})))
 
 (defn- send!
   "Send `req`, retrying per the client's retry policy. Returns the response of
@@ -447,17 +458,25 @@
                                 :content (json/generate-string body)}]
                               parts)))
 
+(defn- lower-case-keys [headers]
+  (update-keys headers (comp str/lower-case name)))
+
 (defn- request
   "Send a request and return the response with its `:body` parsed."
   [client method path {:keys [body parts headers timeout-ms]}]
   (let [req (cond-> {:method method
                      :uri (str (:base-url client) path)
-                     :headers (merge {"accept" "application/json"
-                                      "user-agent" (str "cljev/" version)}
-                                     (:headers client)
-                                     headers
-                                     (when-let [api-key (::api-key (meta client))]
-                                       {"authorization" (str "Bearer " api-key)}))
+                     ;; names are lowercased so that a caller's header
+                     ;; replaces the client's, or is replaced by it, and is
+                     ;; never sent beside it; the body's content type is the
+                     ;; client's to set
+                     :headers (-> (merge {"accept" "application/json"
+                                          "user-agent" (str "cljev/" version)}
+                                         (lower-case-keys (:headers client))
+                                         (lower-case-keys headers)
+                                         (when-let [api-key (::api-key (meta client))]
+                                           {"authorization" (str "Bearer " api-key)}))
+                                  (dissoc "content-type"))
                      :timeout (or timeout-ms (:timeout-ms client))
                      :throw false}
               (:http-client client) (assoc :client (:http-client client)))
@@ -579,6 +598,17 @@
    (when (empty? questions)
      (throw (ex-info "ask needs at least one question"
                      {:type ::invalid-request})))
+   (when-not (distinct-names? (keys questions))
+     (throw (ex-info (str "Question names must be distinct once written as "
+                          "strings: :a and \"a\" are the same name")
+                     {:type ::invalid-request})))
+   (doseq [[question-name question] questions
+           :let [criteria (when (map? question)
+                            (or (:criteria question) (get question "criteria")))]
+           :when (and (map? criteria) (not (distinct-names? (keys criteria))))]
+     (throw (ex-info (str "The criteria of question " (pr-str question-name)
+                          " have names that are the same once written as strings")
+                     {:type ::invalid-question :question question-name})))
    (when-not (contains? #{nil :multipart :base64} upload)
      (throw (ex-info ":upload must be :multipart or :base64"
                      {:type ::invalid-option :upload upload})))

@@ -257,6 +257,9 @@ The values shown for `:timeout-ms`, `:compression`, the two paths, and
   works. A key with whitespace or non-ASCII characters inside it is rejected
   before any request. The key is stored in the client's metadata, so printing
   the client does not print the key.
+- **Headers.** Header names are compared without regard to case. The
+  client sets `authorization` (when it has a key) and `content-type`; a
+  caller's `accept` or `user-agent` replaces the client's.
 - **Compression.** Request bodies of 1 KiB or more are gzip-compressed. Pass
   `:compression nil` to send them as they are. Multipart requests are not
   compressed. For another `:base-url` compression is off by default; see
@@ -309,11 +312,11 @@ Failures are thrown as `ex-info`:
 
 | `:type` in `ex-data` | When | Other keys |
 | - | - | - |
-| `:cljev.core/api-error` | Non-2xx reply after retries | `:status`, `:detail`, `:body`, `:headers`, `:request-id` |
+| `:cljev.core/api-error` | Non-2xx reply after retries | `:status`, `:detail`, `:body`, `:headers`, `:request-id`, `:retry-after-ms` |
 | `:cljev.core/connection-error` | Server unreachable or timed out after retries | `:attempts`, with the cause attached |
-| `:cljev.core/invalid-question` | Bad choice options or score levels | |
+| `:cljev.core/invalid-question` | Bad choice options or score levels, or option names that are the same once written as strings (`:a` and `"a"`) | |
 | `:cljev.core/invalid-asset` | Unsupported image format, or a bad `:assets` value | |
-| `:cljev.core/invalid-request` | `ask` called with no questions | |
+| `:cljev.core/invalid-request` | `ask` called with no questions, or with question names that are the same once written as strings | |
 | `:cljev.core/invalid-option` | Unknown `:upload` or `:compression` value, or a `verdict` threshold outside 0.5 to 1 | |
 | `:cljev.core/invalid-answer` | `verdict` or `sample` given an answer it cannot read | |
 | `:cljev.core/missing-api-key` | No API key for the TypeSafe API, given or in the environment | |
