@@ -21,10 +21,10 @@
 (def questions
   {:complaint (jev/noul "Is the customer complaining about something?")
    :team      (jev/choice "Which team should handle this message?"
-                          {:billing   "Charges, refunds, invoices, and payment methods"
-                           :technical "Bugs, outages, and how to use the product"
-                           :sales     "Pricing, plans, and new purchases"
-                           :other     "Anything that fits none of the other teams"})
+                          [[:billing   "Charges, refunds, invoices, and payment methods"]
+                           [:technical "Bugs, outages, and how to use the product"]
+                           [:sales     "Pricing, plans, and new purchases"]
+                           [:other     "Anything that fits none of the other teams"]])
    :urgency   (jev/score "How urgent is this message?" urgency-levels)})
 
 (defn- pct [p]

@@ -47,8 +47,8 @@ the question names you gave, and choice answers use your option names, so
 keywords come back as keywords and strings as strings. Score levels are keyed
 by their integer position.
 
-For a single question, `ask-one` returns the answer itself, with the model and
-usage in its metadata:
+For a single question, `ask-one` returns the answer itself, with the model,
+usage, and request id in its metadata:
 
 ```clojure
 (jev/ask-one client "The package arrived crushed." (jev/noul "Is this a complaint?"))
@@ -64,55 +64,116 @@ usage in its metadata:
 | `(score instructions levels)` | A rating on 1 to 10 ordered levels | `:score`, `:confidence`, `:legend`, `:probabilities` |
 | `(box instructions)` | Where something is in an image | `:box` with `:top :bottom :left :right`, `:confidence` |
 
-`choice` options are a map of name to description, or a collection of names
-with no descriptions. Instructions, option descriptions, and level
-descriptions can be strings, maps, or vectors.
+Instructions, option descriptions, and level descriptions can be strings,
+maps, or vectors.
 
 The constructors return plain maps, and `ask` accepts hand-written maps in the
 same shape as the HTTP API (`{:type :noul :instructions "..."}`).
 
+#### Choice options and their order
+
+`choice` takes its options in three forms:
+
+```clojure
+(jev/choice "Tone?" [:angry :calm])                            ; names
+(jev/choice "Tone?" [[:angry "Hostile or upset"] [:calm "Neutral"]]) ; [name description] pairs
+(jev/choice "Tone?" {:angry "Hostile or upset" :calm "Neutral"})     ; a map
+```
+
+Options are sent in the order given. TypeSafe
+[documents](https://docs.typesafe.ai/model-jaggedness) that the order can
+affect the answer and that Jev can lean toward the first option. A collection
+keeps its order for any number of options. A Clojure map literal only keeps
+its order up to 8 entries, so use pairs for a larger set with descriptions.
+
+### Many states
+
+`ask-many` asks the same questions about each of a collection of states, one
+request per state, several at a time. Results come back in input order. A
+failed request does not stop the others; its result is `{:error e}`.
+
+```clojure
+(jev/ask-many client
+              ["Where is my refund?" "I love this product."]
+              {:question (jev/noul "Is this text a question?")}
+              {:concurrency 4})   ; default 8
+;; => [{:model .. :answers {:question {:type :noul :noul 0.99}} :usage ..}
+;;     {:model .. :answers {:question {:type :noul :noul 0.01}} :usage ..}]
+```
+
 ### Request options
 
-`ask` and `ask-one` take an options map as a last argument:
+`ask`, `ask-one`, and `ask-many` take an options map as a last argument:
 
 ```clojure
 (jev/ask client state questions
          {:model "jev-1.14.0"   ; default is the client's model, jev-latest
           :long-context? true   ; TypeSafe-Danger-Zone-Long-Context: true
           :timeout-ms 30000
-          :headers {"x-request-id" "abc"}})
+          :headers {"x-request-id" "abc"}
+          :extra-body {:some_new_field 1}})
 ```
 
 `jev-latest` is an alias that moves when a release ships. Pass a versioned id
 to pin the model, per request or as `:model` on the client.
 
+`:extra-body` adds top-level fields to the request, for API features this
+client has no option for.
+
 ### Images
 
-Images are sent as assets keyed by a placeholder string. The placeholder is
-replaced by the image wherever it appears in a string in the state or a
-question. Requests with assets or box questions need `:images? true`, which
-sends the `TypeSafe-Danger-Zone-Images: true` header.
+`image` takes a path, a file, or a byte array with a format (`:png`, `:jpg`,
+`:jpeg`). Put the image wherever a value goes in the state or in a question's
+instructions or criteria. Requests with images or box questions need
+`:images? true`, which sends the `TypeSafe-Danger-Zone-Images: true` header.
 
 ```clojure
-(let [ref (str (random-uuid))]
-  (jev/ask client
-           {:photo ref}
-           {:cat?  (jev/noul "Is there a cat in the photo?")
-            :where (jev/box "the cat")}
-           {:assets {ref (jev/image "cat.png")}
-            :images? true}))
+(jev/ask client
+         {:photo (jev/image "cat.png")}
+         {:cat?  (jev/noul "Is there a cat in the photo?")
+          :where (jev/box "the cat")}
+         {:images? true})
 ```
 
-`image` takes a path, a file, or a byte array with a format (`:png`, `:jpg`,
-`:jpeg`). Images are base64-encoded into the JSON body; multipart upload is
-not implemented.
+To use an image inside a string, write its `:ref` into the string and pass
+the image in `:assets`:
+
+```clojure
+(let [before (jev/image "before.jpg")
+      after  (jev/image "after.jpg")]
+  (jev/ask client
+           (str "Before: " (:ref before) " After: " (:ref after))
+           {:changed (jev/noul "Did anything change between the two photos?")}
+           {:assets [before after] :images? true}))
+```
+
+`:assets` also takes a map of your own reference strings to images, or to raw
+asset maps in the API's shape.
+
+Image bytes are uploaded as `multipart/form-data`. Pass `:upload :base64` to
+put them in the JSON body instead, which makes each image about a third
+larger. An image used in several places is uploaded once.
 
 ### Models
 
 ```clojure
 (jev/models client)
-;; => [{:name "jev-latest" :description "..." :release-date "2026-10-14"} ...]
+;; => [{:name "jev-latest" :description "..." :release-date "2026-10-22T02:00:00+00:00"} ...]
 ```
+
+### Response metadata
+
+Results of `ask` and `models` carry the HTTP exchange in their metadata:
+
+```clojure
+(meta (jev/ask client state questions))
+;; => {:request-id "req_01a1..."
+;;     :response {:status 200 :headers {...} :body {...}}}
+```
+
+`:body` is the JSON as received, with string keys, including any fields this
+client does not know about. Answers of a type the client does not know are
+returned with their fields as they came.
 
 ### Client options
 
@@ -121,33 +182,45 @@ not implemented.
              :base-url "..."       ; default: TYPESAFE_BASE_URL, then https://api.typesafe.ai
              :model "jev-1.14.0"   ; default: TYPESAFE_DEFAULT_MODEL, then jev-latest
              :timeout-ms 10000
+             :compression :gzip
              :retry {:max-retries 2
                      :backoff-initial-ms 500
                      :backoff-max-ms 5000
-                     :backoff-jitter 0.25}
+                     :backoff-jitter 0.25
+                     :max-retry-after-ms 60000}
              :headers {"x-team" "support"}})
 ```
 
-The values shown for `:timeout-ms` and `:retry` are the defaults, which match
-the TypeSafe Python SDK. The API key is stored in the client's metadata, so
-printing the client does not print the key.
+The values shown for `:timeout-ms`, `:compression`, and `:retry` are the
+defaults.
+
+- **API key.** Surrounding whitespace is removed, so a key read from a file
+  works. A key with whitespace or non-ASCII characters inside it is rejected
+  before any request. The key is stored in the client's metadata, so printing
+  the client does not print the key.
+- **Compression.** Request bodies of 1 KiB or more are gzip-compressed. Pass
+  `:compression nil` for a server that does not accept compressed requests.
+  Multipart requests are not compressed.
 
 ### Retries and errors
 
 Responses with status 408, 429, or 5xx (including 529) and connection
 failures are retried with exponential backoff. `retry-after` and
-`retry-after-ms` response headers set the wait when present.
+`retry-after-ms` response headers set the wait when present. A reply that asks
+for a wait longer than `:max-retry-after-ms` is thrown without retrying.
 
 Failures are thrown as `ex-info`:
 
 | `:type` in `ex-data` | When | Other keys |
 | - | - | - |
-| `:cljev.core/api-error` | Non-2xx reply after retries | `:status`, `:detail`, `:body`, `:headers` |
+| `:cljev.core/api-error` | Non-2xx reply after retries | `:status`, `:detail`, `:body`, `:headers`, `:request-id` |
 | `:cljev.core/connection-error` | Server unreachable or timed out after retries | `:attempts`, with the cause attached |
-| `:cljev.core/invalid-question` | Too few or too many choice options or score levels | |
-| `:cljev.core/invalid-asset` | Unsupported image format | |
+| `:cljev.core/invalid-question` | Bad choice options or score levels | |
+| `:cljev.core/invalid-asset` | Unsupported image format, or a bad `:assets` value | |
 | `:cljev.core/invalid-request` | `ask` called with no questions | |
+| `:cljev.core/invalid-option` | Unknown `:upload` or `:compression` value | |
 | `:cljev.core/missing-api-key` | No API key given or in the environment | |
+| `:cljev.core/invalid-api-key` | API key contains whitespace or non-ASCII characters | |
 
 ## Examples
 
@@ -168,9 +241,8 @@ bb examples/grep.clj "mentions a deadline" < notes.txt
 
 ## Not implemented
 
-- Multipart image upload
-- Request body compression (`gzip`, `zstd`)
-- An async API; use `future` or virtual threads to fan out requests
+- zstd request compression; gzip is used instead
+- An async API; use `ask-many`, `future`, or virtual threads to fan out requests
 
 ## Development
 
@@ -179,11 +251,16 @@ Tasks run through babashka:
 ```
 bb test        # tests under babashka
 bb test:jvm    # tests on the JVM
+bb test:live   # tests that call the TypeSafe API
 bb lint        # clj-kondo
 bb fmt         # cljfmt fix
 bb fmt:check   # cljfmt check
-bb ci          # fmt:check, lint, and both test runs
+bb ci          # fmt:check, lint, test, and test:jvm
 ```
 
-The tests use a stubbed request function and a local http-kit server. None of
-them call the TypeSafe API.
+`bb test` and `bb test:jvm` use a stubbed request function and a local
+http-kit server, and never call the TypeSafe API.
+
+`bb test:live` calls the API. It needs `TYPESAFE_API_KEY`, its requests are
+billed, and its assertions depend on the model's answers. It lives in
+`test-live/` and is not part of `bb ci`.

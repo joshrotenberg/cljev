@@ -8,11 +8,20 @@
         :exec-args {:dirs ["test"]}}
   test:jvm {:doc "Run the tests on the JVM"
             :task (clojure "-M:test")}
+  test:live {:doc "Run the tests that call the TypeSafe API. Needs TYPESAFE_API_KEY; billed"
+             :extra-paths ["test-live"]
+             :extra-deps {io.github.cognitect-labs/test-runner
+                          {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+             :task (do (when-not (System/getenv "TYPESAFE_API_KEY")
+                         (println "test:live needs TYPESAFE_API_KEY")
+                         (System/exit 2))
+                       (exec 'cognitect.test-runner.api/test))
+             :exec-args {:dirs ["test-live"]}}
   lint {:doc "Lint with clj-kondo"
-        :task (shell "clj-kondo --lint src test examples")}
+        :task (shell "clj-kondo --lint src test test-live examples")}
   fmt {:doc "Format the sources with cljfmt"
-       :task (clojure "-M:cljfmt fix src test examples")}
+       :task (clojure "-M:cljfmt fix src test test-live examples")}
   fmt:check {:doc "Check formatting with cljfmt"
-             :task (clojure "-M:cljfmt check src test examples")}
+             :task (clojure "-M:cljfmt check src test test-live examples")}
   ci {:doc "Format check, lint, and both test runs"
       :depends [fmt:check lint test test:jvm]}}}

@@ -22,23 +22,17 @@
 (def client (jev/client))
 (def question (jev/choice "Which label best describes this text?" labels))
 
-(defn- classify [line]
-  (try
-    (jev/ask-one client line question)
-    (catch clojure.lang.ExceptionInfo e
-      {:error (ex-message e)})))
-
 (def lines
-  (remove str/blank? (line-seq (java.io.BufferedReader. *in*))))
+  (vec (remove str/blank? (line-seq (java.io.BufferedReader. *in*)))))
 
-;; pmap keeps the output in input order and runs a bounded number of
-;; requests at a time.
-(doseq [[line {:keys [choice confidence error]}] (map vector lines (pmap classify lines))]
+;; ask-many returns results in input order and gives a failed line an
+;; :error instead of stopping the rest.
+(doseq [[line {:keys [answers error]}]
+        (map vector lines (jev/ask-many client lines {:label question} {:concurrency 4}))]
   (if error
     (binding [*out* *err*]
-      (println (str "failed: " line ": " error)))
-    (println (str choice (when (< confidence threshold) "?")
-                  "\t" (format "%.2f" (double confidence))
-                  "\t" line))))
-
-(shutdown-agents)
+      (println (str "failed: " line ": " (ex-message error))))
+    (let [{:keys [choice confidence]} (:label answers)]
+      (println (str choice (when (< confidence threshold) "?")
+                    "\t" (format "%.2f" (double confidence))
+                    "\t" line)))))
