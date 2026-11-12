@@ -9,10 +9,10 @@
   test:jvm {:doc "Run the tests on the JVM"
             :task (clojure "-M:test")}
   lint {:doc "Lint with clj-kondo"
-        :task (shell "clj-kondo --lint src test")}
+        :task (shell "clj-kondo --lint src test examples")}
   fmt {:doc "Format the sources with cljfmt"
-       :task (clojure "-M:cljfmt fix src test")}
+       :task (clojure "-M:cljfmt fix src test examples")}
   fmt:check {:doc "Check formatting with cljfmt"
-             :task (clojure "-M:cljfmt check src test")}
+             :task (clojure "-M:cljfmt check src test examples")}
   ci {:doc "Format check, lint, and both test runs"
       :depends [fmt:check lint test test:jvm]}}}

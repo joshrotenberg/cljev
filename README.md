@@ -149,6 +149,23 @@ Failures are thrown as `ex-info`:
 | `:cljev.core/invalid-request` | `ask` called with no questions | |
 | `:cljev.core/missing-api-key` | No API key given or in the environment | |
 
+## Examples
+
+`examples/` has babashka scripts. Run them from the project root with
+`TYPESAFE_API_KEY` set:
+
+| Script | What it does |
+| - | - |
+| `bb examples/models.clj` | Lists the models the account can use. A quick check that the key works. |
+| `bb examples/triage.clj [MESSAGE]` | Asks a noul, a choice, and a score about a support message in one request. |
+| `bb examples/classify.clj LABEL LABEL ... < lines` | Labels each line of stdin, one request per line, several at a time. Marks low-confidence labels. |
+| `bb examples/grep.clj DESCRIPTION < lines` | Prints the lines of stdin that fit a description, using one yes/no question per line in a single request. |
+
+```
+git log --format=%s -20 | bb examples/classify.clj feature fix docs chore
+bb examples/grep.clj "mentions a deadline" < notes.txt
+```
+
 ## Not implemented
 
 - Multipart image upload
