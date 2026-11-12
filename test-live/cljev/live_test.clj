@@ -1,7 +1,7 @@
 (ns cljev.live-test
   "Tests that call the TypeSafe API. They need TYPESAFE_API_KEY, they are
   billed, and their assertions depend on the model's answers. Run them with
-  `bb test:live`; `bb test` and `bb ci` never run them."
+  `CLJEV_LIVE_TESTS=1 bb test:live`; `bb test` and `bb check` never run them."
   (:require [cljev.core :as jev]
             [clojure.test :refer [deftest is testing]])
   (:import (java.io ByteArrayOutputStream DataOutputStream)

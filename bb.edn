@@ -1,27 +1,20 @@
-{:paths ["src"]
+{:min-bb-version "1.13.225"
+ :paths ["src" "test" "examples"]
  :tasks
- {test {:doc "Run the tests under babashka"
-        :extra-paths ["test"]
-        :extra-deps {io.github.cognitect-labs/test-runner
-                     {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-        :task (exec 'cognitect.test-runner.api/test)
-        :exec-args {:dirs ["test"]}}
-  test:jvm {:doc "Run the tests on the JVM"
-            :task (clojure "-M:test")}
-  test:live {:doc "Run the tests that call the TypeSafe API. Needs TYPESAFE_API_KEY; billed"
+ {test {:doc "Run the tests under Babashka; never calls the TypeSafe API."
+        :task (apply (requiring-resolve 'cljev.test-runner/-main) *command-line-args*)}
+  jvm-test {:doc "Run the same tests on the JVM."
+            :task (shell "clojure -M:test")}
+  test:live {:doc "Opt-in tests that call the TypeSafe API; CLJEV_LIVE_TESTS=1 and TYPESAFE_API_KEY run billed requests."
              :extra-paths ["test-live"]
-             :extra-deps {io.github.cognitect-labs/test-runner
-                          {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
-             :task (do (when-not (System/getenv "TYPESAFE_API_KEY")
-                         (println "test:live needs TYPESAFE_API_KEY")
-                         (System/exit 2))
-                       (exec 'cognitect.test-runner.api/test))
-             :exec-args {:dirs ["test-live"]}}
-  lint {:doc "Lint with clj-kondo"
-        :task (shell "clj-kondo --lint src test test-live examples")}
-  fmt {:doc "Format the sources with cljfmt"
-       :task (clojure "-M:cljfmt fix src test test-live examples")}
-  fmt:check {:doc "Check formatting with cljfmt"
-             :task (clojure "-M:cljfmt check src test test-live examples")}
-  ci {:doc "Format check, lint, and both test runs"
-      :depends [fmt:check lint test test:jvm]}}}
+             :task (apply (requiring-resolve 'cljev.live-test-runner/-main) *command-line-args*)}
+  lint {:doc "Check the repository conventions: clj-kondo, no em dashes, conventional commits since origin/main."
+        :task (apply shell "bb dev/lint.clj" *command-line-args*)}
+  fmt {:doc "Format the sources with cljfmt."
+       :task (shell "clojure -M:cljfmt fix src test test-live examples dev build.clj")}
+  fmt:check {:doc "Check the formatting with cljfmt."
+             :task (shell "clojure -M:cljfmt check src test test-live examples dev build.clj")}
+  check {:doc "The pre-push checks: fmt:check, lint, test and jvm-test."
+         ;; each in its own process: the test runner exits when it finishes
+         :task (doseq [task ["fmt:check" "lint" "test" "jvm-test"]]
+                 (shell "bb" task))}}}

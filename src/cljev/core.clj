@@ -26,6 +26,10 @@
            (java.util.concurrent Executors Future)
            (java.util.zip GZIPOutputStream)))
 
+(def version
+  "The version of this library, sent in the user-agent header."
+  "0.1.0") ; x-release-please-version
+
 (def default-base-url "https://api.typesafe.ai")
 (def default-model "jev-latest")
 (def default-timeout-ms 10000)
@@ -429,7 +433,8 @@
   [client method path {:keys [body parts headers timeout-ms]}]
   (let [req (cond-> {:method method
                      :uri (str (:base-url client) path)
-                     :headers (merge {"accept" "application/json"}
+                     :headers (merge {"accept" "application/json"
+                                      "user-agent" (str "cljev/" version)}
                                      (:headers client)
                                      headers
                                      {"authorization"

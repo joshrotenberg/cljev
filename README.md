@@ -1,12 +1,45 @@
 # cljev
 
-A Clojure and babashka client for [Jev](https://docs.typesafe.ai/introduction),
-TypeSafe's System One model. You send a `state` and a set of typed questions
-about it, and get back structured answers with probabilities.
+[![ci](https://github.com/joshrotenberg/cljev/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/joshrotenberg/cljev/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/joshrotenberg/cljev?sort=semver)](https://github.com/joshrotenberg/cljev/releases)
+[![Clojars Project](https://img.shields.io/clojars/v/io.github.joshrotenberg/cljev.svg)](https://clojars.org/io.github.joshrotenberg/cljev)
+[![Babashka](https://img.shields.io/badge/babashka-1.13.225%2B-green)](https://babashka.org)
+[![JVM](https://img.shields.io/badge/JVM-21%20%7C%2025-green)](https://clojure.org)
+[![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+
+A Clojure client for [Jev](https://docs.typesafe.ai/introduction), TypeSafe's
+System One model, for Babashka and the JVM from the same source. You send a
+`state` and a set of typed questions about it, and get back structured answers
+with probabilities.
 
 It covers the two endpoints in the
 [TypeSafe OpenAPI spec](https://api.typesafe.ai/openapi.json):
 `POST /v1/systemone` and `GET /v1/models`.
+
+cljev is at 0.x: the API may change between minor versions until 1.0. It is
+not affiliated with TypeSafe.
+
+## Using cljev
+
+Each release is on Clojars and is also a git tag (see
+[RELEASING.md](RELEASING.md)). The first release, 0.1.0, has not been made
+yet; until it is, depend on a commit with `:git/sha`.
+
+<!-- x-release-please-start-version -->
+```clojure
+;; deps.edn or bb.edn, from Clojars
+{:deps {io.github.joshrotenberg/cljev {:mvn/version "0.1.0"}}}
+
+;; or from the tag; :git/sha is the tag's commit
+{:deps {io.github.joshrotenberg/cljev {:git/tag "v0.1.0" :git/sha "..."}}}
+```
+<!-- x-release-please-end -->
+
+`git ls-remote https://github.com/joshrotenberg/cljev.git refs/tags/<tag>`
+gives the sha.
+
+The only runtime dependencies are `babashka.http-client` and `cheshire`, both
+of which Babashka bundles.
 
 ## Usage
 
@@ -224,20 +257,22 @@ Failures are thrown as `ex-info`:
 
 ## Examples
 
-`examples/` has babashka scripts. Run them from the project root with
-`TYPESAFE_API_KEY` set:
+`examples/` has example programs, each a namespace with a `-main`. Run them
+from the project root with `TYPESAFE_API_KEY` set:
 
-| Script | What it does |
+| Command | What it does |
 | - | - |
-| `bb examples/models.clj` | Lists the models the account can use. A quick check that the key works. |
-| `bb examples/triage.clj [MESSAGE]` | Asks a noul, a choice, and a score about a support message in one request. |
-| `bb examples/classify.clj LABEL LABEL ... < lines` | Labels each line of stdin, one request per line, several at a time. Marks low-confidence labels. |
-| `bb examples/grep.clj DESCRIPTION < lines` | Prints the lines of stdin that fit a description, using one yes/no question per line in a single request. |
+| `bb -m cljev.example.models` | Lists the models the account can use. A quick check that the key works. |
+| `bb -m cljev.example.triage [MESSAGE]` | Asks a noul, a choice, and a score about a support message in one request. |
+| `bb -m cljev.example.classify LABEL LABEL ... < lines` | Labels each line of stdin, one request per line, several at a time. Marks low-confidence labels. |
+| `bb -m cljev.example.grep DESCRIPTION < lines` | Prints the lines of stdin that fit a description, using one yes/no question per line in a single request. |
 
 ```
-git log --format=%s -20 | bb examples/classify.clj feature fix docs chore
-bb examples/grep.clj "mentions a deadline" < notes.txt
+git log --format=%s -20 | bb -m cljev.example.classify feature fix docs chore
+bb -m cljev.example.grep "mentions a deadline" < notes.txt
 ```
+
+On the JVM, `clojure -M:dev -m cljev.example.triage` runs the same programs.
 
 ## Not implemented
 
@@ -246,21 +281,23 @@ bb examples/grep.clj "mentions a deadline" < notes.txt
 
 ## Development
 
-Tasks run through babashka:
+[AGENTS.md](AGENTS.md) has the layout, the checks, and the conventions.
 
 ```
-bb test        # tests under babashka
-bb test:jvm    # tests on the JVM
-bb test:live   # tests that call the TypeSafe API
-bb lint        # clj-kondo
-bb fmt         # cljfmt fix
-bb fmt:check   # cljfmt check
-bb ci          # fmt:check, lint, test, and test:jvm
+bb test        # tests under Babashka
+bb jvm-test    # the same tests on the JVM
+bb lint        # clj-kondo, no em dashes, conventional commits
+bb fmt:check   # cljfmt check; bb fmt fixes
+bb check       # all four
 ```
 
-`bb test` and `bb test:jvm` use a stubbed request function and a local
+`bb test` and `bb jvm-test` use a stubbed request function and a local
 http-kit server, and never call the TypeSafe API.
 
-`bb test:live` calls the API. It needs `TYPESAFE_API_KEY`, its requests are
-billed, and its assertions depend on the model's answers. It lives in
-`test-live/` and is not part of `bb ci`.
+`bb test:live` calls the API. It runs only with `CLJEV_LIVE_TESTS=1` and
+`TYPESAFE_API_KEY` set, its requests are billed, and its assertions depend on
+the model's answers. It is not part of `bb check` or CI.
+
+## License
+
+MIT

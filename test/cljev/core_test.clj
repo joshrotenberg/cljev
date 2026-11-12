@@ -92,6 +92,7 @@
     (is (= :post (:method req)))
     (is (= "https://example.test/v1/systemone" (:uri req)))
     (is (= "Bearer test-key" (get-in req [:headers "authorization"])))
+    (is (= (str "cljev/" jev/version) (get-in req [:headers "user-agent"])))
     (is (= "application/json" (get-in req [:headers "content-type"])))
     (is (= "support" (get-in req [:headers "x-team"])))
     (is (= 10000 (:timeout req)))
