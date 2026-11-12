@@ -333,6 +333,7 @@ from the project root with `TYPESAFE_API_KEY` set:
 | `bb -m cljev.example.triage [MESSAGE]` | Asks a noul, a choice, and a score about a support message in one request. |
 | `bb -m cljev.example.classify LABEL LABEL ... < lines` | Labels each line of stdin, one request per line, several at a time. Marks low-confidence labels. |
 | `bb -m cljev.example.grep DESCRIPTION < lines` | Prints the lines of stdin that fit a description, using one yes/no question per line in a single request. |
+| `bb -m cljev.example.search QUESTION PATH ...` | Searches the files under the paths by meaning and prints the passages most likely to answer the question. |
 
 ```
 git log --format=%s -20 | bb -m cljev.example.classify feature fix docs chore
@@ -340,6 +341,40 @@ bb -m cljev.example.grep "mentions a deadline" < notes.txt
 ```
 
 On the JVM, `clojure -M:dev -m cljev.example.triage` runs the same programs.
+
+### Search
+
+`cljev.example.search` splits each file into overlapping windows of lines,
+puts a batch of windows in the state with one yes/no question per window, and
+ranks the windows by the probability of yes:
+
+```
+$ bb -m cljev.example.search "how are idle sessions cleaned up" src
+0.94  src/presa/transport/http/server.clj:301-330  ...
+0.90  src/presa/transport/http/server.clj:321-350  ...
+328 windows, 12 requests, 136212 input tokens (about $0.0057), 0.6s
+```
+
+There is no index: each search reads every window, so its cost grows with the
+corpus. `PREFILTER=N` asks only about the N windows a keyword ranking puts
+first, which costs less and misses the passages that share no words with the
+question.
+
+One measurement, on 2026-11-12 with `jev-1.14.0`: 14 questions about the
+source of [presa](https://github.com/joshrotenberg/presa) (32 files, 328
+windows), each worded without the identifiers in the code and each with one
+passage picked beforehand as the answer.
+
+| Ranking | Answer first | Answer in top 5 | Input tokens per search | Time per search |
+| - | - | - | - | - |
+| Keywords only | 0 of 14 | 6 of 14 | 0 | 0 |
+| Jev over every window | 10 of 14 | 14 of 14 | about 145,000 ($0.006) | 0.4 s |
+| Keywords pick 60 windows, then Jev | 9 of 14 | 10 of 14 | about 27,000 ($0.001) | 0.2 s |
+
+This is a small test by the author of the questions, on one repository. The
+questions were paraphrased, which favors a ranking by meaning over one by
+keywords; the keyword ranking matches whole words with no stemming; and other
+passages that also answer a question were counted as misses.
 
 ## Not implemented
 
