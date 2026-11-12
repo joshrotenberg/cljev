@@ -7,5 +7,8 @@
 (ns examples.models
   (:require [cljev.core :as jev]))
 
-(doseq [{:keys [name release-date description]} (jev/models (jev/client))]
-  (println (format "%-14s %-12s %s" name release-date description)))
+(let [models (jev/models (jev/client))
+      width (fn [k] (apply max 0 (map (comp count k) models)))
+      row (str "%-" (width :name) "s  %-" (width :release-date) "s  %s")]
+  (doseq [{:keys [name release-date description]} models]
+    (println (format row name release-date description))))
